@@ -17,6 +17,31 @@ parameters the data cannot pin down, and gives you input that fixes it:
 
 > A self-calibrating system that knows what it doesn't know.
 
+## Who this is for
+
+- **Embedded and robotics engineers who estimate parameters online** with minikalman's
+  RLS or an augmented EKF/UKF, and must decide when the estimate is good enough to hand
+  to a controller: motor gains, friction, payload mass, sensor calibration. The verdict
+  comes from the estimator's own covariance, against tolerances in each parameter's
+  units, and names the parameter combination the data cannot pin down. `no_std`, no
+  allocation, and the same fixed-point types as minikalman.
+- **Adaptive and self-calibrating systems that excite only when they must**: the
+  excitation monitor tells whether the recent input still informs every parameter
+  direction, and `Prbs` generates band-limited excitation around an operating point
+  once it does not.
+- **People identifying grey-box models**, a physical model with unknown parameters such
+  as `vₖ₊₁ = a·vₖ + b·uₖ − c·tanh(vₖ/ε)`, who want to know whether an experiment can
+  identify them before running it, or while it runs. `Sensitivity` propagates `∂y/∂θ`
+  from the model's Jacobians, so the same excitation check works without a linear
+  regressor.
+
+It does not estimate parameters itself; that is
+[minikalman](https://github.com/sunsided/minikalman-rs)'s job, and miniident reads its
+covariance. It is not a toolbox for offline black-box identification of recorded data
+(ARX, subspace methods, model discovery) either. Model validation on the innovations
+([#5](https://github.com/sunsided/miniident/issues/5)) and choosing the most informative
+input ([#6](https://github.com/sunsided/miniident/issues/6)) are planned, not built yet.
+
 ## Design
 
 - **The estimator's covariance is the source of truth.** For RLS,
