@@ -87,7 +87,7 @@ fn identity<T: MatrixDataType, const N: usize>() -> [[T; N]; N] {
 }
 
 /// All index pairs `(p, q)` with `p < q < N`, in the cyclic Jacobi order.
-fn upper_pairs<const N: usize>() -> impl Iterator<Item = (usize, usize)> {
+pub(crate) fn upper_pairs<const N: usize>() -> impl Iterator<Item = (usize, usize)> {
     (0..N).flat_map(|p| (0..N).filter(move |&q| q > p).map(move |q| (p, q)))
 }
 

@@ -29,7 +29,7 @@
 //!
 //! [`RecursiveLeastSquares`]: minikalman::rls::RecursiveLeastSquares
 
-use crate::linalg::{abs, sqrt_clamped, symmetric_eigen};
+use crate::linalg::{abs, sqrt_clamped, symmetric_eigen, upper_pairs};
 use minikalman::matrix::{Matrix, MatrixData, MatrixDataType, MatrixMut};
 use minikalman::rls::RecursiveLeastSquares;
 
@@ -73,7 +73,9 @@ pub struct IdentifiabilityReport<T, const N: usize> {
 /// What is required of an estimate of `N` parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Identifiability<T, const N: usize> {
+    /// Acceptable standard deviation per parameter, in its own units; every entry positive.
     tolerance: [T; N],
+    /// Largest acceptable `|ρ|` between two parameters.
     max_correlation: T,
 }
 
@@ -96,11 +98,13 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     }
 
     /// The tolerances.
+    #[must_use]
     pub fn tolerance(&self) -> &[T; N] {
         &self.tolerance
     }
 
     /// The correlation limit.
+    #[must_use]
     pub fn max_correlation(&self) -> T {
         self.max_correlation
     }
@@ -108,6 +112,7 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     /// Judges the covariance of a [`RecursiveLeastSquares`] estimator, in either
     /// [`CovarianceForm`](minikalman::rls::CovarianceForm). `O(N³)`, with an `N` × `N`
     /// scratch matrix on the stack.
+    #[must_use]
     pub fn assess_rls<Theta, P, TempF, TempK>(
         &self,
         rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK>,
@@ -124,6 +129,7 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     }
 
     /// Judges an `N` × `N` parameter covariance.
+    #[must_use]
     pub fn assess<M: Matrix<N, N, T>>(&self, covariance: &M) -> IdentifiabilityReport<T, N> {
         let mut p = [[T::zero(); N]; N];
         for (i, row) in p.iter_mut().enumerate() {
@@ -143,6 +149,7 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     ///
     /// # Panics
     /// If an index is not below `S`.
+    #[must_use]
     pub fn assess_block<const S: usize, M: Matrix<S, S, T>>(
         &self,
         covariance: &M,
@@ -159,63 +166,132 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     }
 
     /// Judges a covariance given as an array.
+    ///
+    /// NaN entries do not panic; they make the affected figures NaN, and a NaN relative
+    /// standard deviation does not count as out of tolerance.
+    #[must_use]
     pub fn assess_array(&self, p: &[[T; N]; N]) -> IdentifiabilityReport<T, N> {
-        let zero = T::zero();
-        let one = T::one();
+        let std_dev = diagonal(p).map(sqrt_clamped);
+        let relative = self.relative(&std_dev);
+        let e = symmetric_eigen(&self.scaled(p));
 
-        let mut std_dev = [zero; N];
-        let mut relative = [zero; N];
-        let mut least_identified = 0;
-        for i in 0..N {
-            std_dev[i] = sqrt_clamped(p[i][i]);
-            relative[i] = std_dev[i] / self.tolerance[i];
-            if relative[i] > relative[least_identified] {
-                least_identified = i;
-            }
-        }
-
-        let mut scaled = [[zero; N]; N];
-        for i in 0..N {
-            for j in 0..N {
-                scaled[i][j] = p[i][j] / self.tolerance[i] / self.tolerance[j];
-            }
-        }
-        let e = symmetric_eigen(&scaled);
-        let (worst_relative_std_dev, worst_direction) = if N == 0 {
-            (zero, [zero; N])
-        } else {
-            (sqrt_clamped(e.values[N - 1]), e.vectors[N - 1])
+        // The eigenvalues ascend, so the last pair is the worst combination. N = 0 has none.
+        let (worst_relative_std_dev, worst_direction) = match (e.values.last(), e.vectors.last()) {
+            (Some(&value), Some(&vector)) => (sqrt_clamped(value), vector),
+            _ => (T::zero(), [T::zero(); N]),
         };
-
-        let mut strongest_correlation: Option<(usize, usize, T)> = None;
-        for i in 0..N {
-            for j in (i + 1)..N {
-                let d = std_dev[i] * std_dev[j];
-                let rho = if d > zero { p[i][j] / d } else { zero };
-                if strongest_correlation.is_none_or(|(_, _, r)| abs(rho) > abs(r)) {
-                    strongest_correlation = Some((i, j, rho));
-                }
-            }
-        }
-
-        let status = if relative.iter().any(|&r| r > one) {
-            IdentifiabilityStatus::Unidentified
-        } else if strongest_correlation.is_some_and(|(_, _, r)| abs(r) > self.max_correlation) {
-            IdentifiabilityStatus::Correlated
-        } else {
-            IdentifiabilityStatus::Identified
-        };
+        let strongest_correlation = strongest_correlation(p, &std_dev);
 
         IdentifiabilityReport {
-            status,
+            status: self.verdict(&relative, strongest_correlation),
             std_dev,
             relative_std_dev: relative,
-            least_identified,
+            least_identified: index_of_max(&relative),
             worst_relative_std_dev,
             worst_direction,
             strongest_correlation,
         }
     }
+
+    /// `std_dev[i] / tolerance[i]` for every parameter.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "from_fn yields i < N, and both arrays have N entries"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
+    fn relative(&self, std_dev: &[T; N]) -> [T; N] {
+        core::array::from_fn(|i| std_dev[i] / self.tolerance[i])
+    }
+
+    /// The tolerance-scaled covariance `T⁻¹·P·T⁻¹`.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "from_fn yields i, j < N, and every array is N or N × N"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
+    fn scaled(&self, p: &[[T; N]; N]) -> [[T; N]; N] {
+        core::array::from_fn(|i| {
+            core::array::from_fn(|j| p[i][j] / self.tolerance[i] / self.tolerance[j])
+        })
+    }
+
+    /// The verdict from the relative standard deviations and the strongest correlation.
+    fn verdict(
+        &self,
+        relative: &[T; N],
+        strongest_correlation: Option<(usize, usize, T)>,
+    ) -> IdentifiabilityStatus {
+        if relative.iter().any(|&r| r > T::one()) {
+            IdentifiabilityStatus::Unidentified
+        } else if strongest_correlation.is_some_and(|(_, _, r)| abs(r) > self.max_correlation) {
+            IdentifiabilityStatus::Correlated
+        } else {
+            IdentifiabilityStatus::Identified
+        }
+    }
+}
+
+/// The diagonal `Pᵢᵢ` of a square matrix.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "from_fn yields i < N, and p is N × N"
+)]
+fn diagonal<T: MatrixDataType, const N: usize>(p: &[[T; N]; N]) -> [T; N] {
+    core::array::from_fn(|i| p[i][i])
+}
+
+/// Index of the largest value; the first one on ties, and `0` for `N = 0`. A NaN never
+/// becomes the maximum unless it comes first.
+fn index_of_max<T: MatrixDataType, const N: usize>(values: &[T; N]) -> usize {
+    values
+        .iter()
+        .enumerate()
+        .fold((0, None), |(best, max), (i, &v)| {
+            if max.is_none_or(|m| v > m) {
+                (i, Some(v))
+            } else {
+                (best, max)
+            }
+        })
+        .0
+}
+
+/// The most strongly correlated pair `(i, j, ρᵢⱼ)` with `i < j`, or `None` for `N < 2`.
+///
+/// A pair with a zero standard deviation has `ρ = 0`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "i < j < N: upper_pairs yields only such pairs, and every array is N or N × N"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+)]
+fn strongest_correlation<T: MatrixDataType, const N: usize>(
+    p: &[[T; N]; N],
+    std_dev: &[T; N],
+) -> Option<(usize, usize, T)> {
+    let mut strongest: Option<(usize, usize, T)> = None;
+
+    for (i, j) in upper_pairs::<N>() {
+        let d = std_dev[i] * std_dev[j];
+        let rho = if d > T::zero() {
+            p[i][j] / d
+        } else {
+            T::zero()
+        };
+        if strongest.is_none_or(|(_, _, r)| abs(rho) > abs(r)) {
+            strongest = Some((i, j, rho));
+        }
+    }
+
+    strongest
 }
 
 #[cfg(test)]
