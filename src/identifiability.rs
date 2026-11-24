@@ -42,7 +42,8 @@ pub enum IdentifiabilityStatus {
     /// limit: the data hardly tells them apart, and the estimate of their difference rests on
     /// few samples or on the prior.
     Correlated,
-    /// At least one parameter is outside its tolerance.
+    /// At least one parameter is outside its tolerance, or the covariance is broken: it has
+    /// a NaN entry or a variance below `−tolerance²`.
     Unidentified,
 }
 
@@ -167,8 +168,10 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
 
     /// Judges a covariance given as an array.
     ///
-    /// A covariance with a NaN entry, for example from a diverged estimator, is always
-    /// [`Unidentified`](IdentifiabilityStatus::Unidentified). The figures of the affected
+    /// A broken covariance, for example from a diverged estimator, is always
+    /// [`Unidentified`](IdentifiabilityStatus::Unidentified): one with a NaN entry, or with a
+    /// variance below `−tolerance²`. Smaller negative variances are rounding noise and count
+    /// as zero. The figures of the affected
     /// parameters are NaN, and [`least_identified`](IdentifiabilityReport::least_identified)
     /// points at the first parameter with a NaN relative standard deviation. Fixed-point types
     /// can overflow; see the [`linalg`](crate::linalg) module docs.
@@ -224,17 +227,35 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
         })
     }
 
+    /// `true` if `p` has a NaN entry or a variance below `−tolerance²`.
+    ///
+    /// The bound lies far beyond rounding noise at the scale of each parameter, so only a
+    /// covariance that lost positive definiteness fails it.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
+    fn is_broken(&self, p: &[[T; N]; N]) -> bool {
+        let has_nan = p.as_flattened().iter().any(|&x| is_nan(x));
+        let has_negative_variance = diagonal(p)
+            .iter()
+            .zip(&self.tolerance)
+            .any(|(&variance, &t)| variance < -(t * t));
+
+        has_nan || has_negative_variance
+    }
+
     /// The verdict from the relative standard deviations and the strongest correlation.
     ///
-    /// A NaN anywhere in `p` makes the verdict `Unidentified`: a diverged covariance must not
-    /// pass as trusted.
+    /// A broken `p` (see [`Self::is_broken`]) makes the verdict `Unidentified`: a diverged
+    /// covariance must not pass as trusted.
     fn verdict(
         &self,
         p: &[[T; N]; N],
         relative: &[T; N],
         strongest_correlation: Option<(usize, usize, T)>,
     ) -> IdentifiabilityStatus {
-        if p.as_flattened().iter().any(|&x| is_nan(x)) || relative.iter().any(|&r| r > T::one()) {
+        if self.is_broken(p) || relative.iter().any(|&r| r > T::one()) {
             IdentifiabilityStatus::Unidentified
         } else if strongest_correlation.is_some_and(|(_, _, r)| abs(r) > self.max_correlation) {
             IdentifiabilityStatus::Correlated
@@ -417,6 +438,27 @@ mod tests {
             r.status,
             IdentifiabilityStatus::Unidentified,
             "NaN covariance"
+        );
+    }
+
+    #[test]
+    fn negative_variance_is_unidentified_beyond_rounding() {
+        let id = Identifiability::<f64, 2>::new([0.1, 0.1], 0.9);
+
+        for variance in [-1e6, f64::NEG_INFINITY, -0.011] {
+            let r = id.assess_array(&[[variance, 0.0], [0.0, 0.001]]);
+            assert_eq!(
+                r.status,
+                IdentifiabilityStatus::Unidentified,
+                "variance {variance} is below −tolerance² = −0.01"
+            );
+        }
+
+        let r = id.assess_array(&[[-1e-18, 0.0], [0.0, 0.001]]);
+        assert_eq!(
+            r.status,
+            IdentifiabilityStatus::Identified,
+            "rounding noise counts as zero"
         );
     }
 
