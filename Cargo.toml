@@ -65,6 +65,10 @@ private_intra_doc_links = "allow"
 name = "rls-identifiability"
 path = "examples/rls_identifiability.rs"
 
+[[example]]
+name = "greybox-sensitivity"
+path = "examples/greybox_sensitivity.rs"
+
 [dev-dependencies]
 criterion = "0.8"
 proptest = "1.12"

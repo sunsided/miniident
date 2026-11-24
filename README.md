@@ -37,9 +37,10 @@ parameters the data cannot pin down, and gives you input that fixes it:
 
 | Module            | Contents |
 | ----------------- | -------- |
-| `identifiability` | `Identifiability::assess_rls`, `assess_block` (augmented EKF/UKF), `assess`: per-parameter σ and σ/tolerance, worst-determined parameter combination, strongest correlated pair, verdict `Identified` / `Correlated` / `Unidentified` |
+| `identifiability` | `Identifiability::assess_rls`, `assess_block` (augmented EKF/UKF), `assess`: per-parameter σ and σ/tolerance, worst-determined parameter combination, strongest correlated pair, verdict `Identified` / `Correlated` / `Unidentified`; `prior_ratio` / `prior_ratio_rls`: how much of `P` is still the prior `P₀` |
 | `excitation`      | `ExcitationMonitor` on the regressors (`for_rls` copies the estimator's μ): `Warmup` / `Insufficient` / `IllConditioned` / `Sufficient`, weakest direction, number of deficient directions |
 | `information`     | Exponentially weighted information matrix from regressors or grey-box output sensitivities; log-determinant (D-optimality) |
+| `sensitivity`     | `Sensitivity`: propagates `∂y/∂θ` of a grey-box model `x_{k+1} = f(x, u, θ)`, `y = h(x, u, θ)` from its Jacobians; `jacobian` fills them by central differences |
 | `prbs`            | Maximal-length PRBS, orders 2–32, bit hold for band limiting, dithering around an operating point |
 | `linalg`          | Jacobi symmetric eigen-decomposition (minikalman has Cholesky, but no eigen) and Cholesky log-determinant |
 
@@ -88,12 +89,17 @@ At rest only the steady-state relation is observed. The correlation verdict fire
 ~200 steps before any tolerance is violated, and the worst direction is the
 combination the steady state cannot see.
 
+`cargo run --example greybox-sensitivity` does the same for a motor with smooth Coulomb
+friction, `v_{k+1} = a·v + b·u − c·tanh(v/ε)`, which has no linear regressor: `Sensitivity`
+propagates `∂y/∂θ` through the model's Jacobians into `ExcitationMonitor::update_sensitivity`,
+which turns `IllConditioned` at rest along the combination the steady state cannot see.
+
 ## Roadmap
 
 | Release | Scope |
 | ------- | ----- |
-| 0.1 | Identifiability from RLS and augmented-filter covariances, excitation monitor, PRBS (this draft) |
-| 0.2 | Sensitivity propagation for grey-box models `x_{k+1} = f(x, u, θ)`, so `update_sensitivity` can be fed without hand-written Jacobians; identifiability relative to the prior (data vs. `P₀`) |
+| 0.1 | Identifiability from RLS and augmented-filter covariances, excitation monitor, PRBS |
+| 0.2 | Sensitivity propagation for grey-box models `x_{k+1} = f(x, u, θ)`, so `update_sensitivity` can be fed without hand-derived `∂y/∂θ`; identifiability relative to a diagonal prior (data vs. `P₀`) (this draft) |
 | 0.3 | Model validation on minikalman's innovations: whiteness over a lag window, input–residual cross-correlation, NIS/NEES consistency |
 | 0.4 | Excitation design: D-/E-optimal choice among candidate inputs under amplitude and rate limits; excitation along `worst_direction` |
 | later | Directional forgetting (likely belongs in minikalman's RLS itself), recursive IV/RPEM, recursive subspace identification, EM on the RTS smoother |

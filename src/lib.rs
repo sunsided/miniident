@@ -9,9 +9,12 @@
 //! - **Are the parameters identified?** [`identifiability`] reads the estimator's own
 //!   covariance and reports, per parameter and per parameter combination, whether the
 //!   uncertainty is within the tolerance you set, and which parameters the data cannot tell
-//!   apart.
+//!   apart. [`prior_ratio`](identifiability::prior_ratio) tells how much of that covariance
+//!   is still the prior.
 //! - **Why not?** [`excitation`] looks at the regressors themselves and tells whether the
 //!   input is persistently exciting, and which parameter combination it starves.
+//!   For grey-box models, [`sensitivity`] propagates `∂y/∂θ` from the model's Jacobians, so
+//!   the same check works without a linear regressor.
 //! - **What fixes it?** [`prbs`] generates maximal-length binary excitation, held for as many
 //!   samples as the plant's bandwidth needs.
 //!
@@ -20,6 +23,8 @@
 //!   prbs["prbs: excitation input"] --> plant[plant]
 //!   plant -- "φ, y" --> rls["minikalman estimator"]
 //!   plant -- "φ" --> excitation["excitation: is the input informative?"]
+//!   plant -- "Jacobians" --> sensitivity["sensitivity: ∂y/∂θ"]
+//!   sensitivity -- "∂y/∂θ" --> excitation
 //!   rls -- "covariance P" --> identifiability["identifiability: is θ trusted?"]
 //!   identifiability -- "Unidentified: excite again" --> prbs
 //! ```
@@ -55,6 +60,7 @@ pub mod identifiability;
 pub mod information;
 pub mod linalg;
 pub mod prbs;
+pub mod sensitivity;
 
 pub use minikalman;
 
@@ -69,8 +75,10 @@ pub mod prelude {
         ExcitationMonitor, ExcitationReport, ExcitationStatus, ExcitationThresholds,
     };
     pub use crate::identifiability::{
-        Identifiability, IdentifiabilityReport, IdentifiabilityStatus,
+        Identifiability, IdentifiabilityReport, IdentifiabilityStatus, PriorReport, prior_ratio,
+        prior_ratio_rls,
     };
     pub use crate::information::InformationMatrix;
     pub use crate::prbs::Prbs;
+    pub use crate::sensitivity::{Sensitivity, jacobian};
 }

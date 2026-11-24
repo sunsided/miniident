@@ -6,4 +6,5 @@
 mod identifiability;
 mod linalg;
 mod prbs;
+mod sensitivity;
 mod strategies;
