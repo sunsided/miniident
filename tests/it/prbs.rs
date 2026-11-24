@@ -19,8 +19,8 @@ proptest! {
     fn every_seed_has_full_period_and_balance(order in 2..=MAX_TESTED_ORDER, seed in any::<u32>()) {
         let mut prbs = generator(order, 1, seed)?;
         let period = usize::try_from(prbs.period_bits()).map_err(|_| TestCaseError::fail("period fits usize"))?;
-        let bits: Vec<bool> = prbs.by_ref().take(period * 2).collect();
-        let (first, second) = bits.split_at(period);
+        let first: Vec<bool> = prbs.by_ref().take(period).collect();
+        let second: Vec<bool> = prbs.by_ref().take(period).collect();
         let ones = first.iter().filter(|&&b| b).count();
 
         prop_assert_eq!(first, second);
