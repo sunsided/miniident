@@ -1,0 +1,32 @@
+[package]
+name = "miniident-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Separate workspace: cargo-fuzz needs nightly and must stay out of the root crate.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.miniident]
+path = ".."
+
+[[bin]]
+name = "assess"
+path = "fuzz_targets/assess.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eigen"
+path = "fuzz_targets/eigen.rs"
+test = false
+doc = false
+bench = false

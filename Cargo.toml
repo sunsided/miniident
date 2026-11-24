@@ -23,3 +23,11 @@ minikalman = { version = "0.9", default-features = false }
 [[example]]
 name = "rls-identifiability"
 path = "examples/rls_identifiability.rs"
+
+[dev-dependencies]
+criterion = "0.8"
+proptest = "1.12"
+
+[[bench]]
+name = "assess"
+harness = false
