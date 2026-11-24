@@ -29,7 +29,7 @@
 //!
 //! [`RecursiveLeastSquares`]: minikalman::rls::RecursiveLeastSquares
 
-use crate::linalg::{abs, sqrt_clamped, symmetric_eigen, upper_pairs};
+use crate::linalg::{abs, is_nan, sqrt_clamped, symmetric_eigen, upper_pairs};
 use minikalman::matrix::{Matrix, MatrixData, MatrixDataType, MatrixMut};
 use minikalman::rls::RecursiveLeastSquares;
 
@@ -167,11 +167,11 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
 
     /// Judges a covariance given as an array.
     ///
-    /// NaN entries do not panic, but they are not detected either. A NaN variance gives a
-    /// standard deviation of zero, so a diverged covariance can be reported as
-    /// [`Identified`](IdentifiabilityStatus::Identified). Check the covariance for NaN first
-    /// if the estimator can diverge. Fixed-point types can overflow; see the
-    /// [`linalg`](crate::linalg) module docs.
+    /// A covariance with a NaN entry, for example from a diverged estimator, is always
+    /// [`Unidentified`](IdentifiabilityStatus::Unidentified). The figures of the affected
+    /// parameters are NaN, and [`least_identified`](IdentifiabilityReport::least_identified)
+    /// points at the first parameter with a NaN relative standard deviation. Fixed-point types
+    /// can overflow; see the [`linalg`](crate::linalg) module docs.
     #[must_use]
     pub fn assess_array(&self, p: &[[T; N]; N]) -> IdentifiabilityReport<T, N> {
         let std_dev = diagonal(p).map(sqrt_clamped);
@@ -186,7 +186,7 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
         let strongest_correlation = strongest_correlation(p, &std_dev);
 
         IdentifiabilityReport {
-            status: self.verdict(&relative, strongest_correlation),
+            status: self.verdict(p, &relative, strongest_correlation),
             std_dev,
             relative_std_dev: relative,
             least_identified: index_of_max(&relative),
@@ -225,12 +225,16 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     }
 
     /// The verdict from the relative standard deviations and the strongest correlation.
+    ///
+    /// A NaN anywhere in `p` makes the verdict `Unidentified`: a diverged covariance must not
+    /// pass as trusted.
     fn verdict(
         &self,
+        p: &[[T; N]; N],
         relative: &[T; N],
         strongest_correlation: Option<(usize, usize, T)>,
     ) -> IdentifiabilityStatus {
-        if relative.iter().any(|&r| r > T::one()) {
+        if p.as_flattened().iter().any(|&x| is_nan(x)) || relative.iter().any(|&r| r > T::one()) {
             IdentifiabilityStatus::Unidentified
         } else if strongest_correlation.is_some_and(|(_, _, r)| abs(r) > self.max_correlation) {
             IdentifiabilityStatus::Correlated
@@ -249,14 +253,14 @@ fn diagonal<T: MatrixDataType, const N: usize>(p: &[[T; N]; N]) -> [T; N] {
     core::array::from_fn(|i| p[i][i])
 }
 
-/// Index of the largest value; the first one on ties, and `0` for `N = 0`. A NaN never
-/// becomes the maximum unless it comes first.
+/// Index of the largest value; the first one on ties, and `0` for `N = 0`. NaN ranks above
+/// every number, so the first NaN wins.
 fn index_of_max<T: MatrixDataType, const N: usize>(values: &[T; N]) -> usize {
     values
         .iter()
         .enumerate()
         .fold((0, None), |(best, max), (i, &v)| {
-            if max.is_none_or(|m| v > m) {
+            if max.is_none_or(|m| !is_nan(m) && (is_nan(v) || v > m)) {
                 (i, Some(v))
             } else {
                 (best, max)
@@ -390,6 +394,30 @@ mod tests {
 
         let r = id.assess_array(&[[f(0.0025), f(0.0)], [f(0.0), f(9.0)]]);
         assert_eq!(r.status, IdentifiabilityStatus::Unidentified);
+    }
+
+    #[test]
+    fn nan_covariance_is_unidentified() {
+        let id = Identifiability::<f64, 2>::new([0.1, 0.1], 0.9);
+
+        let r = id.assess_array(&[[0.001, 0.0], [0.0, f64::NAN]]);
+        assert_eq!(
+            r.status,
+            IdentifiabilityStatus::Unidentified,
+            "NaN variance"
+        );
+        assert!(r.std_dev[1].is_nan(), "the NaN variance stays visible");
+        assert_eq!(
+            r.least_identified, 1,
+            "the NaN parameter is the least identified"
+        );
+
+        let r = id.assess_array(&[[0.001, f64::NAN], [f64::NAN, 0.001]]);
+        assert_eq!(
+            r.status,
+            IdentifiabilityStatus::Unidentified,
+            "NaN covariance"
+        );
     }
 
     #[test]
