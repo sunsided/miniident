@@ -1,6 +1,6 @@
 [package]
 name = "miniident"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.85.0"
 description = "Online identifiability and excitation diagnostics on top of minikalman: is the model identified, which parameters are not, and which input fixes it"
