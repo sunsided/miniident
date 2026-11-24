@@ -20,7 +20,8 @@ parameters the data cannot pin down, and gives you input that fixes it:
 ## Design
 
 - **The estimator's covariance is the source of truth.** For RLS,
-  `Pₖ₊₁⁻¹ = μₖ·Pₖ⁻¹ + φₖ·φₖᵀ/r`: the windup guard's variable `μₖ`, the measurement
+  `Pₖ₊₁⁻¹ = μₖ·Pₖ⁻¹ + φₖ·φₖᵀ/r`: the windup guard's variable `μₖ` (or, with
+  minikalman's `Directional` forgetting, forgetting along `φₖ` only), the measurement
   variance, the prior and every gated sample are already in `P`. miniident reads `P`
   (reconstructed from the UD factors where needed) instead of tracking a second
   information matrix that would drift from it. For augmented-state filters, the
@@ -102,14 +103,10 @@ which turns `IllConditioned` at rest along the combination the steady state cann
 | 0.2 | Sensitivity propagation for grey-box models `x_{k+1} = f(x, u, θ)`, so `update_sensitivity` can be fed without hand-derived `∂y/∂θ`; identifiability relative to a diagonal prior (data vs. `P₀`) (this draft) |
 | 0.3 | Model validation on minikalman's innovations: whiteness over a lag window, input–residual cross-correlation, NIS/NEES consistency |
 | 0.4 | Excitation design: D-/E-optimal choice among candidate inputs under amplitude and rate limits; excitation along `worst_direction` |
-| later | Directional forgetting (likely belongs in minikalman's RLS itself), recursive IV/RPEM, recursive subspace identification, EM on the RTS smoother |
+| later | Recursive IV/RPEM, recursive subspace identification, EM on the RTS smoother |
 
 ## Open questions
 
-- **Directional forgetting** ([minikalman-rs#209](https://github.com/sunsided/minikalman-rs/issues/209)).
-  The RLS docs note it as missing. It would fix the
-  windup guard's "forgetting stops for all directions" stall that this crate can
-  only *diagnose*. It changes the estimator, so it fits minikalman better than here.
 - **Cost of `assess`.** `O(N³)` Jacobi per call. For larger `N` on small MCUs, tracking
   only the extreme eigenpair by power iteration on `P` would be `O(N²)`.
 - **Fixed point.** The eigen-decomposition avoids epsilon tests and squared quotients

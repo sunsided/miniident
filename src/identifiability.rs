@@ -32,7 +32,7 @@
 
 use crate::linalg::{abs, is_nan, sqrt_clamped, symmetric_eigen, upper_pairs};
 use minikalman::matrix::{Matrix, MatrixData, MatrixDataType, MatrixMut};
-use minikalman::rls::RecursiveLeastSquares;
+use minikalman::rls::{Forgetting, RecursiveLeastSquares};
 
 /// Smallest eigenvalue of the tolerance-scaled covariance that still counts as rounding noise.
 ///
@@ -122,15 +122,16 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     /// [`CovarianceForm`](minikalman::rls::CovarianceForm). `O(N³)`, with an `N` × `N`
     /// scratch matrix on the stack.
     #[must_use]
-    pub fn assess_rls<Theta, P, TempF, TempK>(
+    pub fn assess_rls<Theta, P, TempF, TempK, F>(
         &self,
-        rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK>,
+        rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK, F>,
     ) -> IdentifiabilityReport<T, N>
     where
         Theta: MatrixMut<N, 1, T>,
         P: MatrixMut<N, N, T>,
         TempF: MatrixMut<N, 1, T>,
         TempK: MatrixMut<N, 1, T>,
+        F: Forgetting,
     {
         let mut p = [[T::zero(); N]; N];
         rls.covariance(&mut MatrixData::new_mut::<N, N, T>(p.as_flattened_mut()));
@@ -294,7 +295,9 @@ pub struct PriorReport<T, const N: usize> {
 /// `P⁻¹ = P₀⁻¹ + Σ φ·φᵀ/r`, so every ratio is in `(0, 1]`: `1` means nothing was learned in
 /// that direction, values far below `1` mean the data dominates the prior. With forgetting,
 /// the information decays back, and with RLS's windup guard `P₀` fades only as `1/k`; there a
-/// ratio near or above `1` reads as "no better than the prior". Use it next to
+/// ratio near or above `1` reads as "no better than the prior". With RLS's
+/// [`Directional`](minikalman::rls::Directional) forgetting, the prior decays only in the
+/// excited directions, so an unexcited direction keeps a ratio near `1`. Use it next to
 /// [`Identifiability::assess`]: a parameter within tolerance whose ratio is near `1` is within
 /// tolerance only because `p0` was small.
 #[must_use]
@@ -328,8 +331,8 @@ pub fn prior_ratio<T: MatrixDataType, const N: usize>(
 /// [`prior_ratio`] for a [`RecursiveLeastSquares`] estimator started from `P₀ = p0·I`, the
 /// value passed to its constructor or [`reset`](RecursiveLeastSquares::reset).
 #[must_use]
-pub fn prior_ratio_rls<T, Theta, P, TempF, TempK, const N: usize>(
-    rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK>,
+pub fn prior_ratio_rls<T, Theta, P, TempF, TempK, F, const N: usize>(
+    rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK, F>,
     p0: T,
 ) -> Option<PriorReport<T, N>>
 where
@@ -338,6 +341,7 @@ where
     P: MatrixMut<N, N, T>,
     TempF: MatrixMut<N, 1, T>,
     TempK: MatrixMut<N, 1, T>,
+    F: Forgetting,
 {
     let mut p = [[T::zero(); N]; N];
     rls.covariance(&mut MatrixData::new_mut::<N, N, T>(p.as_flattened_mut()));
@@ -660,5 +664,49 @@ mod tests {
         assert!((r.worst_ratio - 1.0).abs() < 1e-6, "{r:?}");
         let d = r.worst_direction;
         assert!((d[0] + d[1]).abs() < 1e-6, "{d:?}");
+    }
+
+    /// After excitation stops, exponential forgetting erodes the information in the
+    /// direction the constant regressor does not excite; directional forgetting keeps it.
+    #[test]
+    fn directional_forgetting_keeps_identification_at_rest() {
+        use minikalman::rls::Directional;
+
+        fn run<F: minikalman::rls::Forgetting>(
+            rls: &mut RecursiveLeastSquares<
+                2,
+                f64,
+                impl MatrixMut<2, 1, f64>,
+                impl MatrixMut<2, 2, f64>,
+                impl MatrixMut<2, 1, f64>,
+                impl MatrixMut<2, 1, f64>,
+                F,
+            >,
+        ) -> IdentifiabilityStatus {
+            rls.set_forgetting_factor(0.98);
+            rls.set_measurement_variance(0.01);
+            let mut prbs = Prbs::new(8, 1).unwrap();
+            let (mut u1, mut u2) = (0.0, 0.0);
+            for step in 0..700 {
+                rls.update(&[u1, u2], 0.5 * u1 + 0.2 * u2);
+                u2 = u1;
+                u1 = if step < 300 {
+                    prbs.next_level(1.0)
+                } else {
+                    1.0
+                };
+            }
+            Identifiability::new([0.05, 0.05], 0.999)
+                .assess_rls(rls)
+                .status
+        }
+
+        let mut exponential = EstimatorStorage::<2, f64>::new(0.0);
+        let mut directional = EstimatorStorage::<2, f64>::new(0.0);
+        let exponential = run(&mut exponential.build(100.0));
+        let directional = run(&mut directional.build(100.0).with_forgetting::<Directional>());
+
+        assert_eq!(exponential, IdentifiabilityStatus::Unidentified);
+        assert_ne!(directional, IdentifiabilityStatus::Unidentified);
     }
 }
