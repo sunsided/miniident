@@ -1,43 +1,38 @@
 //! # miniident
 //!
-//! Allocation-free, `no_std` building blocks for **online system identification
-//! diagnostics**: knowing whether the data you are estimating from actually
-//! contains enough information to identify your parameters, and generating
-//! inputs that make sure it does.
+//! Online identifiability and excitation diagnostics for
+//! [minikalman](https://crates.io/crates/minikalman) estimators.
 //!
-//! `miniident` deliberately does not estimate anything itself. Estimation
-//! (RLS, EKF/UKF, augmented and dual filters, smoothers) is the job of
-//! [`minikalman`](https://crates.io/crates/minikalman). `miniident` sits next to
-//! the estimator and consumes the same regressors or output sensitivities.
+//! minikalman estimates parameters: with [`RecursiveLeastSquares`], or as part of the state of
+//! an augmented EKF or UKF. miniident answers the questions that come after:
 //!
-//! ## Modules
+//! - **Are the parameters identified?** [`identifiability`] reads the estimator's own
+//!   covariance and reports, per parameter and per parameter combination, whether the
+//!   uncertainty is within the tolerance you set, and which parameters the data cannot tell
+//!   apart.
+//! - **Why not?** [`excitation`] looks at the regressors themselves and tells whether the
+//!   input is persistently exciting, and which parameter combination it starves.
+//! - **What fixes it?** [`prbs`] generates maximal-length binary excitation, held for as many
+//!   samples as the plant's bandwidth needs.
 //!
-//! - [`information`]: exponentially weighted information (Fisher) matrix from
-//!   regressors or output sensitivities, log-determinant and Cramér–Rao bound.
-//! - [`excitation`]: persistent excitation monitoring with a verdict and the
-//!   weakest identifiable parameter direction.
-//! - [`prbs`]: maximal-length pseudo-random binary sequences for excitation.
-//! - [`linalg`]: the small dense linear algebra the above needs
-//!   (Jacobi eigen-decomposition, Cholesky log-determinant).
+//! ## Why the estimator's covariance
 //!
-//! ## Quick start
+//! For RLS, `Pₖ₊₁⁻¹ = μₖ·Pₖ⁻¹ + φₖ·φₖᵀ/r`: the inverse covariance *is* the information
+//! matrix, including the windup guard's variable forgetting `μₖ`, the measurement variance
+//! `r`, the prior `P₀` and every gated sample that was left out. A separately tracked
+//! information matrix would drift from what the estimator actually knows, so the verdict
+//! comes from `P` itself. For an augmented-state filter, the parameter block of `P` plays the
+//! same role.
 //!
-//! ```
-//! use miniident::excitation::{ExcitationMonitor, ExcitationStatus, ExcitationThresholds};
-//! use miniident::prbs::Prbs;
+//! ## Numeric types
 //!
-//! // Two-tap FIR model: y_k = b1 u_{k-1} + b2 u_{k-2}.
-//! let mut monitor = ExcitationMonitor::<f64, 2>::new(0.99, ExcitationThresholds::default());
-//! let mut prbs = Prbs::new(7, 1).unwrap();
+//! Everything is generic over minikalman's [`MatrixDataType`], works on const-generic arrays
+//! and allocates nothing. Functions that need a logarithm require [`Logarithm`], as in
+//! minikalman.
 //!
-//! let (mut u1, mut u2) = (0.0, 0.0);
-//! for _ in 0..500 {
-//!     monitor.update(&[u1, u2]);
-//!     u2 = u1;
-//!     u1 = prbs.next_level(1.0);
-//! }
-//! assert_eq!(monitor.assess().status, ExcitationStatus::Sufficient);
-//! ```
+//! [`RecursiveLeastSquares`]: minikalman::rls::RecursiveLeastSquares
+//! [`MatrixDataType`]: minikalman::matrix::MatrixDataType
+//! [`Logarithm`]: minikalman::matrix::Logarithm
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -47,8 +42,21 @@
 extern crate std;
 
 pub mod excitation;
+pub mod identifiability;
 pub mod information;
 pub mod linalg;
 pub mod prbs;
 
-pub use num_traits::Float;
+pub use minikalman;
+
+/// The commonly used types.
+pub mod prelude {
+    pub use crate::excitation::{
+        ExcitationMonitor, ExcitationReport, ExcitationStatus, ExcitationThresholds,
+    };
+    pub use crate::identifiability::{
+        Identifiability, IdentifiabilityReport, IdentifiabilityStatus,
+    };
+    pub use crate::information::InformationMatrix;
+    pub use crate::prbs::Prbs;
+}

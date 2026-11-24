@@ -1,135 +1,124 @@
-//! Exponentially weighted information matrix.
-//!
-//! For a linear-in-parameters model `y_k = φ_kᵀ θ + e_k` the information
-//! accumulated from data is
+//! Exponentially weighted information matrix of the data alone.
 //!
 //! ```text
-//! G_k = λ G_{k-1} + w_k φ_k φ_kᵀ
+//! G_k = μ·G_{k-1} + w_k·φ_k·φ_kᵀ                (regressors)
+//! G_k = μ·G_{k-1} + Σᵢ S_{k,i}ᵀ·S_{k,i} / σᵢ²   (output sensitivities of a grey-box model)
 //! ```
 //!
-//! with forgetting factor `λ ∈ (0, 1]` and sample weight `w_k` (typically
-//! `1/σ²`). For nonlinear grey-box models the regressor is replaced by the
-//! output sensitivities `S_k = ∂y_k/∂θ` (an `M × P` Jacobian) and the update
-//! becomes the Fisher information `G_k = λ G_{k-1} + S_kᵀ R⁻¹ S_k`.
-//!
-//! Use the **same** λ as the estimator you are monitoring; then `G` describes
-//! exactly the information the estimator is working with. For an RLS
-//! estimator `G` is the inverse of its covariance up to the noise variance and
-//! initial prior, but tracking it separately avoids inverting the estimator's
-//! covariance and keeps this crate independent of any estimator's storage.
+//! This is the data side of the RLS information `P⁻¹`, without the prior, the windup guard
+//! and the gate. It is what [`ExcitationMonitor`](crate::excitation::ExcitationMonitor) judges
+//! the input by, and what experiment design will compare candidate inputs by. To judge the
+//! *estimate*, use [`Identifiability`](crate::identifiability::Identifiability) on the
+//! estimator's covariance instead.
 
-use crate::linalg::{cholesky_log_det, symmetric_eigen, SymmetricEigen};
-use num_traits::Float;
+use crate::linalg::{SymmetricEigen, cholesky_log_det, symmetric_eigen};
+use minikalman::matrix::{Logarithm, MatrixDataType};
 
-/// Exponentially weighted information matrix for `P` parameters.
+/// Exponentially weighted information matrix for `N` parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InformationMatrix<T, const P: usize> {
-    g: [[T; P]; P],
-    lambda: T,
+pub struct InformationMatrix<T, const N: usize> {
+    g: [[T; N]; N],
+    mu: T,
     samples: T,
 }
 
-impl<T: Float, const P: usize> InformationMatrix<T, P> {
-    /// Creates an empty information matrix with forgetting factor `lambda`.
+impl<T: MatrixDataType, const N: usize> InformationMatrix<T, N> {
+    /// Creates an empty information matrix with forgetting factor `mu`, as in
+    /// [`RecursiveLeastSquares::set_forgetting_factor`](minikalman::rls::RecursiveLeastSquares::set_forgetting_factor).
     ///
     /// # Panics
-    /// If `lambda` is not in `(0, 1]`. Use [`Self::try_new`] to avoid panicking.
-    pub fn new(lambda: T) -> Self {
-        Self::try_new(lambda).expect("forgetting factor must be in (0, 1]")
+    /// If `mu ∉ (0, 1]`. Use [`Self::try_new`] to avoid panicking.
+    pub fn new(mu: T) -> Self {
+        Self::try_new(mu).expect("forgetting factor must be in (0, 1]")
     }
 
-    /// Creates an empty information matrix, or `None` if `lambda ∉ (0, 1]`.
-    pub fn try_new(lambda: T) -> Option<Self> {
-        if lambda > T::zero() && lambda <= T::one() {
-            Some(Self {
-                g: [[T::zero(); P]; P],
-                lambda,
-                samples: T::zero(),
-            })
-        } else {
-            None
-        }
+    /// Creates an empty information matrix, or `None` if `mu ∉ (0, 1]`.
+    pub fn try_new(mu: T) -> Option<Self> {
+        (mu > T::zero() && mu <= T::one()).then(|| Self {
+            g: [[T::zero(); N]; N],
+            mu,
+            samples: T::zero(),
+        })
     }
 
     /// Discards all accumulated information.
     pub fn reset(&mut self) {
-        self.g = [[T::zero(); P]; P];
+        self.g = [[T::zero(); N]; N];
         self.samples = T::zero();
     }
 
-    /// The forgetting factor.
-    pub fn lambda(&self) -> T {
-        self.lambda
+    /// The forgetting factor `μ`.
+    pub fn forgetting_factor(&self) -> T {
+        self.mu
     }
 
-    /// Effective number of samples in the window, `Σ λ^k`.
-    ///
-    /// Saturates at `1/(1-λ)` for `λ < 1`.
+    /// Effective number of samples in the window, `Σ μᵏ`; saturates at `1/(1 − μ)`.
     pub fn effective_samples(&self) -> T {
         self.samples
     }
 
-    /// Adds one regressor with unit weight.
-    pub fn update(&mut self, phi: &[T; P]) {
+    /// Adds one regressor with unit weight. `O(N²)`.
+    pub fn update(&mut self, phi: &[T; N]) {
         self.update_weighted(phi, T::one());
     }
 
-    /// Adds one regressor with weight `w ≥ 0` (e.g. the inverse measurement
-    /// variance, or zero to only apply forgetting for a missing sample).
-    pub fn update_weighted(&mut self, phi: &[T; P], w: T) {
-        self.decay();
-        for i in 0..P {
+    /// Adds one regressor with weight `w ≥ 0`, e.g. `1/r`. A weight of zero only forgets,
+    /// for a sample that was missing or gated.
+    pub fn update_weighted(&mut self, phi: &[T; N], w: T) {
+        self.forget();
+        for i in 0..N {
             let wi = w * phi[i];
-            for j in 0..P {
-                self.g[i][j] = self.g[i][j] + wi * phi[j];
+            for j in 0..N {
+                self.g[i][j] += wi * phi[j];
             }
         }
     }
 
-    /// Adds one sample of an `M`-output model given its output sensitivities.
+    /// Adds one sample of an `M`-output grey-box model from its output sensitivities.
     ///
-    /// `sensitivities[i]` is `∂y_i/∂θ` for output `i` (row `i` of the Jacobian)
-    /// and `inv_noise_variance[i]` is `1/σ_i²`, assuming uncorrelated output
-    /// noise. One call counts as one sample regardless of `M`.
+    /// `sensitivities[i]` is `∂yᵢ/∂θ`, row `i` of the Jacobian, and `inv_noise_variance[i]`
+    /// is `1/σᵢ²` for uncorrelated output noise. One call counts as one sample. `O(M·N²)`.
     pub fn update_sensitivity<const M: usize>(
         &mut self,
-        sensitivities: &[[T; P]; M],
+        sensitivities: &[[T; N]; M],
         inv_noise_variance: &[T; M],
     ) {
-        self.decay();
+        self.forget();
         for (s, &r) in sensitivities.iter().zip(inv_noise_variance) {
-            for i in 0..P {
+            for i in 0..N {
                 let ri = r * s[i];
-                for j in 0..P {
-                    self.g[i][j] = self.g[i][j] + ri * s[j];
+                for j in 0..N {
+                    self.g[i][j] += ri * s[j];
                 }
             }
         }
     }
 
-    fn decay(&mut self) {
-        for row in self.g.iter_mut() {
-            for x in row.iter_mut() {
-                *x = *x * self.lambda;
+    fn forget(&mut self) {
+        if self.mu < T::one() {
+            for row in self.g.iter_mut() {
+                for x in row.iter_mut() {
+                    *x = *x * self.mu;
+                }
             }
         }
-        self.samples = self.samples * self.lambda + T::one();
+        self.samples = self.samples * self.mu + T::one();
     }
 
-    /// The raw accumulated information matrix `G`.
-    pub fn matrix(&self) -> &[[T; P]; P] {
+    /// The raw information matrix `G`.
+    pub fn matrix(&self) -> &[[T; N]; N] {
         &self.g
     }
 
-    /// `G` divided by the effective sample count: the windowed average of
-    /// `w φ φᵀ`. Its eigenvalues are in units of (weighted) regressor power and
-    /// do not depend on λ or on how long the monitor has been running, which
-    /// makes it the right quantity to compare against fixed thresholds.
-    pub fn normalized(&self) -> [[T; P]; P] {
-        let mut out = [[T::zero(); P]; P];
+    /// `G` divided by the effective sample count: the windowed average of `w·φ·φᵀ`.
+    ///
+    /// Its eigenvalues are in units of (weighted) regressor power and depend neither on `μ`
+    /// nor on how long the window has been filling, so fixed thresholds apply.
+    pub fn normalized(&self) -> [[T; N]; N] {
+        let mut out = [[T::zero(); N]; N];
         if self.samples > T::zero() {
-            for i in 0..P {
-                for j in 0..P {
+            for i in 0..N {
+                for j in 0..N {
                     out[i][j] = self.g[i][j] / self.samples;
                 }
             }
@@ -137,71 +126,27 @@ impl<T: Float, const P: usize> InformationMatrix<T, P> {
         out
     }
 
-    /// Eigen-decomposition of the normalized information matrix.
-    pub fn eigen(&self) -> SymmetricEigen<T, P> {
+    /// Eigen-decomposition of the normalized information matrix. `O(N³)`.
+    pub fn eigen(&self) -> SymmetricEigen<T, N> {
         symmetric_eigen(&self.normalized())
     }
 
-    /// Log-determinant of the raw information matrix (D-optimality measure).
-    ///
-    /// `None` while some parameter direction has received no information.
-    pub fn log_det(&self) -> Option<T> {
+    /// Log-determinant of the raw `G`, the D-optimality measure; `None` while some parameter
+    /// direction has received no information.
+    pub fn log_det(&self) -> Option<T>
+    where
+        T: Logarithm,
+    {
         cholesky_log_det(&self.g)
     }
-
-    /// Cramér–Rao lower bound on the parameter covariance, `σ² G⁻¹`.
-    ///
-    /// For unit-weight updates pass the equation-error variance as
-    /// `noise_variance`; for updates already weighted by `1/σ²` pass one.
-    /// Returns `None` if the smallest eigenvalue of the raw `G` is at or below
-    /// `min_eigenvalue`, since the bound is then meaningless (unbounded in the
-    /// unexcited direction).
-    pub fn covariance_bound(&self, noise_variance: T, min_eigenvalue: T) -> Option<[[T; P]; P]> {
-        let e = symmetric_eigen(&self.g);
-        if P == 0 {
-            return Some(self.g);
-        }
-        if !(e.values[0] > min_eigenvalue) || !(e.values[0] > T::zero()) {
-            return None;
-        }
-        let mut cov = [[T::zero(); P]; P];
-        for (value, vector) in e.values.iter().zip(&e.vectors) {
-            let s = noise_variance / *value;
-            for i in 0..P {
-                for j in 0..P {
-                    cov[i][j] = cov[i][j] + s * vector[i] * vector[j];
-                }
-            }
-        }
-        Some(cov)
-    }
-}
-
-/// Converts a covariance matrix to a correlation matrix.
-///
-/// Off-diagonal magnitudes close to one flag parameter pairs that the data
-/// cannot tell apart, even if each is individually well excited. Rows and
-/// columns with zero variance are left at zero.
-pub fn correlation<T: Float, const P: usize>(cov: &[[T; P]; P]) -> [[T; P]; P] {
-    let mut out = [[T::zero(); P]; P];
-    for i in 0..P {
-        for j in 0..P {
-            let d = (cov[i][i] * cov[j][j]).sqrt();
-            if d > T::zero() {
-                out[i][j] = cov[i][j] / d;
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prbs::Prbs;
 
     #[test]
-    fn rejects_bad_lambda() {
+    fn rejects_bad_forgetting() {
         assert!(InformationMatrix::<f64, 2>::try_new(0.0).is_none());
         assert!(InformationMatrix::<f64, 2>::try_new(1.1).is_none());
         assert!(InformationMatrix::<f64, 2>::try_new(1.0).is_some());
@@ -218,53 +163,26 @@ mod tests {
     }
 
     #[test]
-    fn constant_regressor_is_rank_deficient() {
+    fn constant_regressor_has_no_log_det() {
         let mut g = InformationMatrix::<f64, 2>::new(1.0);
         for _ in 0..100 {
             g.update(&[1.0, 1.0]);
         }
         assert!(g.log_det().is_none());
-        assert!(g.covariance_bound(1.0, 1e-9).is_none());
     }
 
     #[test]
-    fn prbs_gives_crb_close_to_sigma2_over_n() {
-        // φ = [u_k, u_{k-1}] with a full PRBS period: G ≈ N·I.
-        let mut prbs = Prbs::new(10, 1).unwrap();
-        let mut g = InformationMatrix::<f64, 2>::new(1.0);
-        let mut prev = prbs.next_level(1.0);
-        let n = prbs.period_samples();
-        for _ in 0..n {
-            let u = prbs.next_level(1.0);
-            g.update(&[u, prev]);
-            prev = u;
-        }
-        let cov = g.covariance_bound(0.25, 1e-9).unwrap();
-        let expected = 0.25 / n as f64;
-        assert!((cov[0][0] / expected - 1.0).abs() < 1e-2);
-        assert!((cov[1][1] / expected - 1.0).abs() < 1e-2);
-        let rho = correlation(&cov);
-        assert!(rho[0][1].abs() < 1e-2);
-        assert!((rho[0][0] - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn sensitivity_update_matches_regressor_update() {
+    fn sensitivity_update_is_weighted_sum() {
         let mut a = InformationMatrix::<f64, 3>::new(0.95);
-        let mut b = InformationMatrix::<f64, 3>::new(0.95);
         let s = [[1.0, -2.0, 0.5], [0.0, 1.0, 3.0]];
         let r = [2.0, 0.5];
         a.update_sensitivity(&s, &r);
-        // Equivalent to two weighted rank-one updates with one decay step.
-        b.update_weighted(&s[0], r[0]);
-        let before = *b.matrix();
-        let mut expected = before;
         for i in 0..3 {
             for j in 0..3 {
-                expected[i][j] += r[1] * s[1][i] * s[1][j];
+                let expected = r[0] * s[0][i] * s[0][j] + r[1] * s[1][i] * s[1][j];
+                assert_eq!(a.matrix()[i][j], expected);
             }
         }
-        assert_eq!(a.matrix(), &expected);
         assert_eq!(a.effective_samples(), 1.0);
     }
 }

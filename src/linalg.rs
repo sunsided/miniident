@@ -1,67 +1,90 @@
-//! Small dense linear algebra on const-generic arrays.
+//! Small dense symmetric linear algebra on const-generic arrays.
 //!
-//! Matrices are row-major `[[T; P]; P]`. Everything here targets the small
-//! parameter counts typical of online identification (P ≲ 20); each call is
-//! O(P³) and allocation-free.
+//! minikalman has Cholesky but no eigen-decomposition, which identifiability analysis needs:
+//! the eigenvectors are the parameter combinations, the eigenvalues how well each is known.
+//! Matrices are row-major `[[T; N]; N]`; every call costs `O(N³)` and allocates nothing.
 
-use num_traits::Float;
+use minikalman::matrix::{Logarithm, MatrixDataType};
 
-/// Upper bound on Jacobi sweeps. Convergence is quadratic; 5–10 sweeps are
-/// typical even for badly scaled matrices.
+/// Upper bound on Jacobi sweeps. Convergence is quadratic; 5–10 sweeps are typical.
 const MAX_SWEEPS: usize = 50;
+
+/// `|x|`.
+#[inline]
+pub(crate) fn abs<T: MatrixDataType>(x: T) -> T {
+    if x < T::zero() { -x } else { x }
+}
+
+/// `√max(x, 0)`, so that a variance driven slightly negative by rounding gives zero.
+#[inline]
+pub(crate) fn sqrt_clamped<T: MatrixDataType>(x: T) -> T {
+    if x > T::zero() {
+        x.square_root()
+    } else {
+        T::zero()
+    }
+}
 
 /// Eigen-decomposition of a symmetric matrix.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SymmetricEigen<T, const P: usize> {
+pub struct SymmetricEigen<T, const N: usize> {
     /// Eigenvalues in ascending order.
-    pub values: [T; P],
-    /// Unit eigenvectors; `vectors[i]` belongs to `values[i]`.
-    pub vectors: [[T; P]; P],
+    pub values: [T; N],
+    /// Unit eigenvectors; `vectors[i]` belongs to `values[i]`. Signs are arbitrary.
+    pub vectors: [[T; N]; N],
 }
 
-/// Computes all eigenvalues and eigenvectors of a symmetric matrix using cyclic
-/// Jacobi rotations.
+/// Computes all eigenvalues and eigenvectors of a symmetric matrix with cyclic Jacobi
+/// rotations.
 ///
-/// Symmetry is assumed, not checked. Jacobi is chosen over QR-based methods
-/// because it is short, branch-light, and accurate for small eigenvalues of
-/// positive semi-definite matrices, which is exactly what excitation
-/// monitoring cares about.
-pub fn symmetric_eigen<T: Float, const P: usize>(m: &[[T; P]; P]) -> SymmetricEigen<T, P> {
+/// Symmetry is assumed and not checked. Jacobi is short and accurate for the small
+/// eigenvalues of positive semi-definite matrices, which is what identifiability is about.
+/// The rotation angle is computed without squaring large quotients, and an off-diagonal
+/// entry is dropped once it no longer changes either diagonal entry it couples, so neither
+/// test depends on a machine epsilon.
+pub fn symmetric_eigen<T: MatrixDataType, const N: usize>(m: &[[T; N]; N]) -> SymmetricEigen<T, N> {
+    let zero = T::zero();
+    let one = T::one();
+    let two = one + one;
+
     let mut a = *m;
-    let mut v = [[T::zero(); P]; P];
+    let mut v = [[zero; N]; N];
     for (i, row) in v.iter_mut().enumerate() {
-        row[i] = T::one();
+        row[i] = one;
     }
 
-    let two = T::one() + T::one();
-    let tol = T::epsilon() * frobenius_norm(&a);
-    let theta_max = T::one() / T::epsilon().sqrt();
-
     for _ in 0..MAX_SWEEPS {
-        let mut off = T::zero();
-        for p in 0..P {
-            for q in (p + 1)..P {
-                off = off + a[p][q] * a[p][q];
-            }
-        }
-        if !(off.sqrt() > tol) {
-            break;
-        }
-
-        for p in 0..P {
-            for q in (p + 1)..P {
+        let mut rotated = false;
+        for p in 0..N {
+            for q in (p + 1)..N {
                 let apq = a[p][q];
-                if apq == T::zero() {
+                if apq == zero {
                     continue;
                 }
-                // Rotation angle that annihilates a[p][q] (Numerical Recipes §11.1).
-                let theta = (a[q][q] - a[p][p]) / (two * apq);
-                let t = if theta.abs() > theta_max {
-                    T::one() / (two * theta)
+                let (app, aqq) = (a[p][p], a[q][q]);
+                let g = abs(apq);
+                if abs(app) + g == abs(app) && abs(aqq) + g == abs(aqq) {
+                    a[p][q] = zero;
+                    a[q][p] = zero;
+                    continue;
+                }
+
+                // tan φ of the rotation that annihilates a[p][q] (Numerical Recipes §11.1),
+                // rewritten for |θ| > 1 so that θ is never squared.
+                let theta = (aqq - app) / (two * apq);
+                let t = if abs(theta) > one {
+                    let r = one / theta;
+                    r / (one + (one + r * r).square_root())
                 } else {
-                    theta.signum() / (theta.abs() + (theta * theta + T::one()).sqrt())
+                    let sign = if theta < zero { -one } else { one };
+                    sign / (abs(theta) + (theta * theta + one).square_root())
                 };
-                let c = T::one() / (t * t + T::one()).sqrt();
+                if t == zero {
+                    a[p][q] = zero;
+                    a[q][p] = zero;
+                    continue;
+                }
+                let c = one / (t * t + one).square_root();
                 let s = t * c;
 
                 for row in a.iter_mut() {
@@ -69,29 +92,33 @@ pub fn symmetric_eigen<T: Float, const P: usize>(m: &[[T; P]; P]) -> SymmetricEi
                     row[p] = c * akp - s * akq;
                     row[q] = s * akp + c * akq;
                 }
-                for k in 0..P {
+                for k in 0..N {
                     let (apk, aqk) = (a[p][k], a[q][k]);
                     a[p][k] = c * apk - s * aqk;
                     a[q][k] = s * apk + c * aqk;
                 }
-                a[p][q] = T::zero();
-                a[q][p] = T::zero();
+                a[p][q] = zero;
+                a[q][p] = zero;
 
                 for row in v.iter_mut() {
                     let (vkp, vkq) = (row[p], row[q]);
                     row[p] = c * vkp - s * vkq;
                     row[q] = s * vkp + c * vkq;
                 }
+                rotated = true;
             }
+        }
+        if !rotated {
+            break;
         }
     }
 
-    // Sort ascending (insertion sort on indices; P is small).
-    let mut order = [0usize; P];
+    // Sort ascending (insertion sort on indices; N is small).
+    let mut order = [0usize; N];
     for (i, o) in order.iter_mut().enumerate() {
         *o = i;
     }
-    for i in 1..P {
+    for i in 1..N {
         let mut j = i;
         while j > 0 && a[order[j - 1]][order[j - 1]] > a[order[j]][order[j]] {
             order.swap(j - 1, j);
@@ -99,11 +126,11 @@ pub fn symmetric_eigen<T: Float, const P: usize>(m: &[[T; P]; P]) -> SymmetricEi
         }
     }
 
-    let mut values = [T::zero(); P];
-    let mut vectors = [[T::zero(); P]; P];
+    let mut values = [zero; N];
+    let mut vectors = [[zero; N]; N];
     for (dst, &src) in order.iter().enumerate() {
         values[dst] = a[src][src];
-        for k in 0..P {
+        for k in 0..N {
             vectors[dst][k] = v[k][src];
         }
     }
@@ -113,10 +140,10 @@ pub fn symmetric_eigen<T: Float, const P: usize>(m: &[[T; P]; P]) -> SymmetricEi
 /// Natural log-determinant of a symmetric positive-definite matrix via Cholesky.
 ///
 /// Returns `None` if the matrix is not numerically positive definite.
-pub fn cholesky_log_det<T: Float, const P: usize>(m: &[[T; P]; P]) -> Option<T> {
-    let mut l = [[T::zero(); P]; P];
-    let mut log_det = T::zero();
-    for j in 0..P {
+pub fn cholesky_log_det<T: Logarithm, const N: usize>(m: &[[T; N]; N]) -> Option<T> {
+    let mut l = [[T::zero(); N]; N];
+    let mut half = T::zero();
+    for j in 0..N {
         let mut d = m[j][j];
         for k in 0..j {
             d = d - l[j][k] * l[j][k];
@@ -124,10 +151,10 @@ pub fn cholesky_log_det<T: Float, const P: usize>(m: &[[T; P]; P]) -> Option<T> 
         if !(d > T::zero()) {
             return None;
         }
-        let ljj = d.sqrt();
+        let ljj = d.square_root();
         l[j][j] = ljj;
-        log_det = log_det + ljj.ln();
-        for i in (j + 1)..P {
+        half = half + ljj.logarithm();
+        for i in (j + 1)..N {
             let mut s = m[i][j];
             for k in 0..j {
                 s = s - l[i][k] * l[j][k];
@@ -135,28 +162,17 @@ pub fn cholesky_log_det<T: Float, const P: usize>(m: &[[T; P]; P]) -> Option<T> 
             l[i][j] = s / ljj;
         }
     }
-    Some(log_det + log_det)
-}
-
-/// Frobenius norm of a square matrix.
-pub fn frobenius_norm<T: Float, const P: usize>(m: &[[T; P]; P]) -> T {
-    let mut s = T::zero();
-    for row in m {
-        for &x in row {
-            s = s + x * x;
-        }
-    }
-    s.sqrt()
+    Some(half + half)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn matvec<const P: usize>(m: &[[f64; P]; P], x: &[f64; P]) -> [f64; P] {
-        let mut y = [0.0; P];
-        for i in 0..P {
-            for j in 0..P {
+    fn matvec<const N: usize>(m: &[[f64; N]; N], x: &[f64; N]) -> [f64; N] {
+        let mut y = [0.0; N];
+        for i in 0..N {
+            for j in 0..N {
                 y[i] += m[i][j] * x[j];
             }
         }
@@ -184,25 +200,30 @@ mod tests {
             }
         }
         assert!(e.values.windows(2).all(|w| w[0] <= w[1]));
-        let trace: f64 = e.values.iter().sum();
-        assert!((trace - 8.0).abs() < 1e-10);
+        assert!((e.values.iter().sum::<f64>() - 8.0).abs() < 1e-10);
     }
 
     #[test]
-    fn eigen_of_rank_one() {
-        let e = symmetric_eigen(&[[1.0, 1.0], [1.0, 1.0]]);
+    fn eigen_of_rank_one_and_extreme_scaling() {
+        let e = symmetric_eigen(&[[1.0f64, 1.0], [1.0, 1.0]]);
         assert!(e.values[0].abs() < 1e-12);
         assert!((e.values[1] - 2.0).abs() < 1e-12);
-        // Null direction is (1, -1)/√2 up to sign.
         assert!((e.vectors[0][0] + e.vectors[0][1]).abs() < 1e-12);
+
+        // Covariances span many decades; θ is far outside the range where θ² would be safe
+        // in f32.
+        let e = symmetric_eigen(&[[1.0e12f32, 1.0], [1.0, 1.0e-6]]);
+        assert!((e.values[1] / 1.0e12 - 1.0).abs() < 1e-6);
+        assert!(e.values[0] <= 1.0e-6 && e.values[0] > 0.9e-6);
     }
 
     #[test]
     fn eigen_of_zero_and_diagonal() {
-        let z = symmetric_eigen(&[[0.0f32; 3]; 3]);
-        assert_eq!(z.values, [0.0; 3]);
-        let d = symmetric_eigen(&[[3.0, 0.0], [0.0, 1.0]]);
-        assert_eq!(d.values, [1.0, 3.0]);
+        assert_eq!(symmetric_eigen(&[[0.0f32; 3]; 3]).values, [0.0; 3]);
+        assert_eq!(
+            symmetric_eigen(&[[3.0, 0.0], [0.0, 1.0]]).values,
+            [1.0, 3.0]
+        );
     }
 
     #[test]

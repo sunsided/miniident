@@ -1,20 +1,25 @@
 [package]
 name = "miniident"
 version = "0.1.0-alpha.1"
-edition = "2021"
-rust-version = "1.75"
-description = "Allocation-free online system identification diagnostics: identifiability, excitation monitoring and experiment design. A companion to minikalman."
+edition = "2024"
+rust-version = "1.85.0"
+description = "Online identifiability and excitation diagnostics on top of minikalman: is the model identified, which parameters are not, and which input fixes it"
+authors = ["Markus Mayer"]
 license = "MIT OR Apache-2.0"
-keywords = ["system-identification", "identifiability", "excitation", "no_std", "estimation"]
-categories = ["science", "embedded", "no-std", "mathematics"]
+keywords = ["system-identification", "identifiability", "kalman-filter", "embedded", "no-std"]
+categories = ["algorithms", "science::robotics", "embedded", "no-std::no-alloc"]
 readme = "README.md"
 
 [features]
-default = []
-std = ["num-traits/std"]
+default = ["libm"]
+std = ["minikalman/std"]
+libm = ["minikalman/libm"]
+micromath = ["minikalman/micromath"]
+fixed = ["minikalman/fixed"]
 
 [dependencies]
-num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+minikalman = { version = "0.9", default-features = false }
 
 [[example]]
-name = "excitation"
+name = "rls-identifiability"
+path = "examples/rls_identifiability.rs"
