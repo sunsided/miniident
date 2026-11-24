@@ -1,7 +1,7 @@
 //! Properties of the identifiability verdict on arbitrary positive-definite covariances.
 
 use crate::strategies::{N, positive_definite, tolerances};
-use miniident::identifiability::{Identifiability, IdentifiabilityStatus};
+use miniident::identifiability::{Identifiability, IdentifiabilityStatus, prior_ratio};
 use proptest::prelude::*;
 
 /// Correlation limit the properties use.
@@ -73,5 +73,37 @@ proptest! {
             (a.worst_relative_std_dev - b.worst_relative_std_dev).abs() <= 1e-9 * a.worst_relative_std_dev.max(1.0),
             "{} vs {}", a.worst_relative_std_dev, b.worst_relative_std_dev,
         );
+    }
+}
+
+proptest! {
+    /// The prior ratio of the prior itself is one in every direction, and scaling `P` scales
+    /// every ratio by the same factor.
+    #[test]
+    fn prior_ratio_of_the_prior_is_one(
+        prior in tolerances(),
+        factor in 0.01..100.0_f64,
+    ) {
+        let variance = prior.map(|t| t * t);
+        let mut p = [[0.0; N]; N];
+        for (i, row) in p.iter_mut().enumerate() {
+            row[i] = variance[i] * factor;
+        }
+
+        let r = prior_ratio(&p, &variance).ok_or_else(|| TestCaseError::fail("prior is positive"))?;
+        for v in r.variance_ratio {
+            prop_assert!((v - factor).abs() < 1e-9 * factor, "{v} vs {factor}");
+        }
+        prop_assert!((r.worst_ratio - factor).abs() < 1e-9 * factor, "{} vs {factor}", r.worst_ratio);
+    }
+
+    /// The least-informed combination is at least as uninformed as any single parameter.
+    #[test]
+    fn worst_prior_ratio_bounds_every_parameter(p in positive_definite(), prior in tolerances()) {
+        let r = prior_ratio(&p, &prior.map(|t| t * t)).ok_or_else(|| TestCaseError::fail("prior is positive"))?;
+        let worst_single = r.variance_ratio.iter().copied().fold(0.0, f64::max);
+
+        prop_assert!(r.worst_ratio >= worst_single * (1.0 - 1e-9), "{} < {worst_single}", r.worst_ratio);
+        prop_assert!(r.variance_ratio[r.least_informed] >= worst_single, "least_informed points at the maximum");
     }
 }
