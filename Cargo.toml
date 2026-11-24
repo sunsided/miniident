@@ -1,0 +1,20 @@
+[package]
+name = "miniident"
+version = "0.1.0-alpha.1"
+edition = "2021"
+rust-version = "1.75"
+description = "Allocation-free online system identification diagnostics: identifiability, excitation monitoring and experiment design. A companion to minikalman."
+license = "MIT OR Apache-2.0"
+keywords = ["system-identification", "identifiability", "excitation", "no_std", "estimation"]
+categories = ["science", "embedded", "no-std", "mathematics"]
+readme = "README.md"
+
+[features]
+default = []
+std = ["num-traits/std"]
+
+[dependencies]
+num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+
+[[example]]
+name = "excitation"
