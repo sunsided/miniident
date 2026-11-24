@@ -1,5 +1,13 @@
 # miniident
 
+[![crates.io](https://img.shields.io/crates/v/miniident.svg)](https://crates.io/crates/miniident)
+[![docs.rs](https://img.shields.io/docsrs/miniident)](https://docs.rs/miniident)
+[![CI](https://github.com/sunsided/miniident/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/miniident/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sunsided/miniident/graph/badge.svg)](https://codecov.io/gh/sunsided/miniident)
+[![MSRV](https://img.shields.io/crates/msrv/miniident)](https://crates.io/crates/miniident)
+[![License](https://img.shields.io/crates/l/miniident)](https://github.com/sunsided/miniident#license)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+
 Online identifiability and excitation diagnostics on top of
 [minikalman](https://github.com/sunsided/minikalman-rs).
 
@@ -92,7 +100,8 @@ combination the steady state cannot see.
 
 ## Open questions
 
-- **Directional forgetting.** The RLS docs note it as missing. It would fix the
+- **Directional forgetting** ([minikalman-rs#209](https://github.com/sunsided/minikalman-rs/issues/209)).
+  The RLS docs note it as missing. It would fix the
   windup guard's "forgetting stops for all directions" stall that this crate can
   only *diagnose*. It changes the estimator, so it fits minikalman better than here.
 - **Cost of `assess`.** `O(N³)` Jacobi per call. For larger `N` on small MCUs, tracking
