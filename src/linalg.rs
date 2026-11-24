@@ -7,9 +7,11 @@
 //! ## Arithmetic
 //!
 //! [`MatrixDataType`] has no checked operators, so the operators of `T` decide what happens
-//! on overflow: floating-point types go to `±∞` or NaN, the fixed-point types behave as in
-//! minikalman's own filters. The functions here never panic on their own; NaN input gives NaN
-//! output, not an error.
+//! on overflow. Floating-point types go to `±∞` or NaN and never panic. The fixed-point types
+//! of the `fixed` crate panic on overflow in debug builds and wrap in release builds, which
+//! gives wrong results without a signal. Keep fixed-point inputs and their tolerance-scaled
+//! values inside the range of the type; for example, `I16F16` overflows when a variance of
+//! `100` is scaled by a tolerance of `0.02`. NaN input gives NaN output, not an error.
 
 use minikalman::matrix::{Logarithm, MatrixDataType};
 

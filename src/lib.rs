@@ -21,7 +21,7 @@
 //!   plant -- "φ, y" --> rls["minikalman estimator"]
 //!   plant -- "φ" --> excitation["excitation: is the input informative?"]
 //!   rls -- "covariance P" --> identifiability["identifiability: is θ trusted?"]
-//!   identifiability -- "worst direction" --> prbs
+//!   identifiability -- "Unidentified: excite again" --> prbs
 //! ```
 //!
 //! ## Why the estimator's covariance

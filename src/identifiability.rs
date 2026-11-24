@@ -167,8 +167,11 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
 
     /// Judges a covariance given as an array.
     ///
-    /// NaN entries do not panic; they make the affected figures NaN, and a NaN relative
-    /// standard deviation does not count as out of tolerance.
+    /// NaN entries do not panic, but they are not detected either. A NaN variance gives a
+    /// standard deviation of zero, so a diverged covariance can be reported as
+    /// [`Identified`](IdentifiabilityStatus::Identified). Check the covariance for NaN first
+    /// if the estimator can diverge. Fixed-point types can overflow; see the
+    /// [`linalg`](crate::linalg) module docs.
     #[must_use]
     pub fn assess_array(&self, p: &[[T; N]; N]) -> IdentifiabilityReport<T, N> {
         let std_dev = diagonal(p).map(sqrt_clamped);
