@@ -102,4 +102,15 @@ combination the steady state cannot see.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE-2.0](https://github.com/sunsided/miniident/blob/main/LICENSE-APACHE-2.0))
+- MIT license ([LICENSE-MIT](https://github.com/sunsided/miniident/blob/main/LICENSE-MIT))
+
+at your option. The examples in `examples/` are public domain
+([CC0-1.0](https://github.com/sunsided/miniident/blob/main/LICENSES/CC0-1.0.txt)), so you can
+copy them into anything.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
