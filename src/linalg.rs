@@ -29,14 +29,20 @@ pub(crate) fn abs<T: MatrixDataType>(x: T) -> T {
 }
 
 /// `√max(x, 0)`, so that a variance driven slightly negative by rounding gives zero. NaN
-/// gives zero.
+/// stays NaN, so that a diverged variance stays visible.
 #[inline]
 pub(crate) fn sqrt_clamped<T: MatrixDataType>(x: T) -> T {
-    if x > T::zero() {
-        x.square_root()
-    } else {
-        T::zero()
+    match x.partial_cmp(&T::zero()) {
+        Some(core::cmp::Ordering::Greater) => x.square_root(),
+        Some(_) => T::zero(),
+        None => x,
     }
+}
+
+/// `true` if `x` is NaN: the only value that is not comparable to itself.
+#[inline]
+pub(crate) fn is_nan<T: MatrixDataType>(x: T) -> bool {
+    x.partial_cmp(&x).is_none()
 }
 
 /// Eigen-decomposition of a symmetric matrix.
