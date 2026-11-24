@@ -25,7 +25,8 @@
 //!
 //! `P` includes the prior `P₀`. A small `p0` makes a parameter look identified before any data
 //! arrived. Start from a `p0` well above the squared tolerance, so that only data can bring a
-//! parameter within it.
+//! parameter within it, and check with [`prior_ratio`] (or [`prior_ratio_rls`]) how much of
+//! `P` is still the prior: a ratio near `1` means the data has not informed that parameter.
 //!
 //! [`RecursiveLeastSquares`]: minikalman::rls::RecursiveLeastSquares
 
@@ -229,18 +230,8 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
     }
 
     /// The tolerance-scaled covariance `T⁻¹·P·T⁻¹`.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "from_fn yields i, j < N, and every array is N or N × N"
-    )]
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
-    )]
     fn scaled(&self, p: &[[T; N]; N]) -> [[T; N]; N] {
-        core::array::from_fn(|i| {
-            core::array::from_fn(|j| p[i][j] / self.tolerance[i] / self.tolerance[j])
-        })
+        scale_symmetric(p, &self.tolerance)
     }
 
     /// `true` if `p` has a NaN entry, or if the smallest eigenvalue of the tolerance-scaled
@@ -275,6 +266,98 @@ impl<T: MatrixDataType, const N: usize> Identifiability<T, N> {
             IdentifiabilityStatus::Identified
         }
     }
+}
+
+/// How much of a covariance is still the prior, per parameter and per parameter combination.
+///
+/// See [`prior_ratio`]. A ratio of `1` means the data has not narrowed that parameter or
+/// combination at all; `0.01` means its variance is a hundredth of the prior's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PriorReport<T, const N: usize> {
+    /// `Pᵢᵢ / p0ᵢ`: the variance of each parameter relative to its prior variance.
+    pub variance_ratio: [T; N],
+    /// Index of the parameter with the largest [`variance_ratio`](Self::variance_ratio).
+    pub least_informed: usize,
+    /// Largest eigenvalue of the prior-scaled covariance `D^{-1/2}·P·D^{-1/2}`,
+    /// `D = diag(p0)`: the variance ratio of the least-informed parameter combination. At
+    /// least the largest of [`variance_ratio`](Self::variance_ratio).
+    pub worst_ratio: T,
+    /// That combination: a unit vector in prior-scaled coordinates (sign arbitrary). Entry `i`
+    /// weighs `θᵢ/√p0ᵢ`.
+    pub worst_direction: [T; N],
+}
+
+/// Compares a parameter covariance `P` with the diagonal prior covariance it started from,
+/// `diag(prior_variance)`; `None` if a prior variance is not positive. `O(N³)`.
+///
+/// With `μ = 1`, no windup guard and no process noise, the data only ever adds information,
+/// `P⁻¹ = P₀⁻¹ + Σ φ·φᵀ/r`, so every ratio is in `(0, 1]`: `1` means nothing was learned in
+/// that direction, values far below `1` mean the data dominates the prior. With forgetting,
+/// the information decays back, and with RLS's windup guard `P₀` fades only as `1/k`; there a
+/// ratio near or above `1` reads as "no better than the prior". Use it next to
+/// [`Identifiability::assess`]: a parameter within tolerance whose ratio is near `1` is within
+/// tolerance only because `p0` was small.
+#[must_use]
+pub fn prior_ratio<T: MatrixDataType, const N: usize>(
+    p: &[[T; N]; N],
+    prior_variance: &[T; N],
+) -> Option<PriorReport<T, N>> {
+    if !prior_variance.iter().all(|&v| v > T::zero()) {
+        return None;
+    }
+
+    let prior_std_dev = prior_variance.map(MatrixDataType::square_root);
+    let scaled = scale_symmetric(p, &prior_std_dev);
+    let variance_ratio = diagonal(&scaled);
+    let e = symmetric_eigen(&scaled);
+
+    // The eigenvalues ascend, so the last pair is the least-informed combination.
+    let (worst_ratio, worst_direction) = match (e.values.last(), e.vectors.last()) {
+        (Some(&value), Some(&vector)) => (value, vector),
+        _ => (T::zero(), [T::zero(); N]),
+    };
+
+    Some(PriorReport {
+        variance_ratio,
+        least_informed: index_of_max(&variance_ratio),
+        worst_ratio,
+        worst_direction,
+    })
+}
+
+/// [`prior_ratio`] for a [`RecursiveLeastSquares`] estimator started from `P₀ = p0·I`, the
+/// value passed to its constructor or [`reset`](RecursiveLeastSquares::reset).
+#[must_use]
+pub fn prior_ratio_rls<T, Theta, P, TempF, TempK, const N: usize>(
+    rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK>,
+    p0: T,
+) -> Option<PriorReport<T, N>>
+where
+    T: MatrixDataType,
+    Theta: MatrixMut<N, 1, T>,
+    P: MatrixMut<N, N, T>,
+    TempF: MatrixMut<N, 1, T>,
+    TempK: MatrixMut<N, 1, T>,
+{
+    let mut p = [[T::zero(); N]; N];
+    rls.covariance(&mut MatrixData::new_mut::<N, N, T>(p.as_flattened_mut()));
+    prior_ratio(&p, &[p0; N])
+}
+
+/// `S⁻¹·P·S⁻¹` for `S = diag(scale)`, every entry of `scale` non-zero.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "from_fn yields i, j < N, and every array is N or N × N"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+)]
+fn scale_symmetric<T: MatrixDataType, const N: usize>(
+    p: &[[T; N]; N],
+    scale: &[T; N],
+) -> [[T; N]; N] {
+    core::array::from_fn(|i| core::array::from_fn(|j| p[i][j] / scale[i] / scale[j]))
 }
 
 /// The diagonal `Pᵢᵢ` of a square matrix.
@@ -495,5 +578,87 @@ mod tests {
         let block = id.assess_block(&m, &[2, 3]);
         let direct = id.assess_array(&[[0.04, 0.01], [0.01, 0.09]]);
         assert_eq!(block, direct);
+    }
+
+    #[test]
+    fn prior_ratio_rejects_non_positive_prior() {
+        assert!(prior_ratio(&[[1.0_f64]], &[0.0]).is_none());
+    }
+
+    #[test]
+    fn prior_ratio_is_one_without_data() {
+        let mut storage = EstimatorStorage::<2, f64>::new(0.0);
+        let rls = storage.build(10.0);
+        let r = prior_ratio_rls(&rls, 10.0).unwrap();
+        assert!(
+            r.variance_ratio.iter().all(|v| (v - 1.0).abs() < 1e-12),
+            "{r:?}"
+        );
+        assert!((r.worst_ratio - 1.0).abs() < 1e-12, "{r:?}");
+    }
+
+    /// With `μ = 1` and no guard, `P⁻¹ − P₀⁻¹` is the data information `Σ φ·φᵀ/r`.
+    #[test]
+    fn prior_ratio_matches_information_without_forgetting() {
+        use crate::information::InformationMatrix;
+
+        let (p0, r) = (10.0, 0.01);
+        let mut storage = EstimatorStorage::<2, f64>::new(0.0);
+        let mut rls = storage.build(p0);
+        rls.set_trace_bound(None);
+        rls.set_measurement_variance(r);
+        let mut info = InformationMatrix::<f64, 2>::new(1.0);
+
+        let mut prbs = Prbs::new(6, 1).unwrap();
+        let mut u1 = 0.0;
+        for _ in 0..20 {
+            let u0 = prbs.next_level(1.0);
+            let phi = [u0, u1];
+            rls.update(&phi, 0.5 * u0 + 0.2 * u1);
+            info.update_weighted(&phi, 1.0 / r);
+            u1 = u0;
+        }
+
+        let mut p = [[0.0; 2]; 2];
+        rls.covariance(&mut MatrixData::new_mut::<2, 2, f64>(p.as_flattened_mut()));
+        let det = p[0][0] * p[1][1] - p[0][1] * p[1][0];
+        let inv = [
+            [p[1][1] / det, -p[0][1] / det],
+            [-p[1][0] / det, p[0][0] / det],
+        ];
+        let g = info.matrix();
+        for i in 0..2 {
+            for j in 0..2 {
+                let prior = if i == j { 1.0 / p0 } else { 0.0 };
+                let data = inv[i][j] - prior;
+                assert!(
+                    (data - g[i][j]).abs() < 1e-6 * g[i][j].abs().max(1.0),
+                    "{i},{j}: {data} vs {}",
+                    g[i][j]
+                );
+            }
+        }
+
+        let report = prior_ratio_rls(&rls, p0).unwrap();
+        assert!(
+            report.variance_ratio.iter().all(|&v| v > 0.0 && v < 1e-2),
+            "{report:?}"
+        );
+        assert!(report.worst_ratio <= 1.0, "{report:?}");
+    }
+
+    #[test]
+    fn prior_ratio_finds_the_unseen_direction() {
+        let mut storage = EstimatorStorage::<2, f64>::new(0.0);
+        let mut rls = storage.build(10.0);
+        rls.set_trace_bound(None);
+        for _ in 0..200 {
+            rls.update(&[1.0, 1.0], 0.7);
+        }
+        let r = prior_ratio_rls(&rls, 10.0).unwrap();
+        // θ₀ − θ₁ is never observed: its variance stays at the prior.
+        assert!((r.worst_ratio - 1.0).abs() < 1e-6, "{r:?}");
+        let d = r.worst_direction;
+        assert!((d[0] + d[1]).abs() < 1e-6, "{d:?}");
     }
 }
