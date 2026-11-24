@@ -34,8 +34,13 @@
 //!   the corrections a filter applies to `x`. It measures what the input can reveal about
 //!   `θ` through the model, not what a particular filter has learned; for that, judge the
 //!   filter's covariance with [`Identifiability`](crate::identifiability::Identifiability).
-//! - For an unstable `F_x`, `S_k` grows without bound, which overflows fixed-point types. Call
-//!   [`Sensitivity::reset`] where the trajectory restarts.
+//! - For a stable `F_x`, `S_k` converges to a bounded limit (e.g. `∂x/∂θ → 1/(1 − a)` for
+//!   `x_{k+1} = a·x_k + θ`). For an unstable `F_x` it grows without bound, which means the
+//!   simulated plant itself diverges: floats go to `±∞` or NaN, and fixed-point types overflow.
+//!   [`Sensitivity::reset`] does not help there, since the next [`step`](Sensitivity::step)
+//!   accumulates the same growth again; treat it as a model or trajectory problem, and check
+//!   the output sensitivities for finite values before feeding a monitor. `reset` is for a
+//!   trajectory that is re-initialized.
 
 use minikalman::matrix::MatrixDataType;
 
@@ -163,6 +168,16 @@ mod tests {
                 assert!((x - y).abs() < 1e-12, "{j:?}");
             }
         }
+    }
+
+    #[test]
+    fn starts_at_zero_and_resets() {
+        let mut sens = Sensitivity::<f64, 2, 1>::default();
+        assert_eq!(sens, Sensitivity::new(), "default is S₀ = 0");
+        sens.step(&[[1.0, 0.0], [0.0, 1.0]], &[[2.0], [3.0]]);
+        assert_eq!(sens.state(), &[[2.0], [3.0]], "S₁ = F_θ from S₀ = 0");
+        sens.reset();
+        assert_eq!(sens.state(), &[[0.0], [0.0]], "reset returns to S = 0");
     }
 
     #[test]
