@@ -17,8 +17,11 @@ use minikalman::matrix::{Logarithm, MatrixDataType};
 /// Exponentially weighted information matrix for `N` parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InformationMatrix<T, const N: usize> {
+    /// The accumulated information `G`; symmetric by construction.
     g: [[T; N]; N],
+    /// Forgetting factor `μ`, in `(0, 1]`.
     mu: T,
+    /// Effective number of samples `Σ μᵏ`.
     samples: T,
 }
 
@@ -66,12 +69,7 @@ impl<T: MatrixDataType, const N: usize> InformationMatrix<T, N> {
     /// for a sample that was missing or gated.
     pub fn update_weighted(&mut self, phi: &[T; N], w: T) {
         self.forget();
-        for i in 0..N {
-            let wi = w * phi[i];
-            for j in 0..N {
-                self.g[i][j] += wi * phi[j];
-            }
-        }
+        self.add_outer(phi, w);
     }
 
     /// Adds one sample of an `M`-output grey-box model from its output sensitivities.
@@ -85,24 +83,37 @@ impl<T: MatrixDataType, const N: usize> InformationMatrix<T, N> {
     ) {
         self.forget();
         for (s, &r) in sensitivities.iter().zip(inv_noise_variance) {
-            for i in 0..N {
-                let ri = r * s[i];
-                for j in 0..N {
-                    self.g[i][j] += ri * s[j];
-                }
-            }
+            self.add_outer(s, r);
         }
     }
 
+    /// Scales `G` by `μ` and counts one more sample: `G ← μ·G`, `n ← μ·n + 1`.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
     fn forget(&mut self) {
         if self.mu < T::one() {
-            for row in self.g.iter_mut() {
-                for x in row.iter_mut() {
-                    *x = *x * self.mu;
-                }
+            for x in self.g.as_flattened_mut() {
+                *x = *x * self.mu;
             }
         }
+
         self.samples = self.samples * self.mu + T::one();
+    }
+
+    /// Adds the weighted outer product `w·x·xᵀ` to `G`. `O(N²)`.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
+    fn add_outer(&mut self, x: &[T; N], w: T) {
+        for (row, &xi) in self.g.iter_mut().zip(x) {
+            let wi = w * xi;
+            for (g, &xj) in row.iter_mut().zip(x) {
+                *g += wi * xj;
+            }
+        }
     }
 
     /// The raw information matrix `G`.
@@ -114,19 +125,21 @@ impl<T: MatrixDataType, const N: usize> InformationMatrix<T, N> {
     ///
     /// Its eigenvalues are in units of (weighted) regressor power and depend neither on `μ`
     /// nor on how long the window has been filling, so fixed thresholds apply.
+    #[must_use]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+    )]
     pub fn normalized(&self) -> [[T; N]; N] {
-        let mut out = [[T::zero(); N]; N];
         if self.samples > T::zero() {
-            for i in 0..N {
-                for j in 0..N {
-                    out[i][j] = self.g[i][j] / self.samples;
-                }
-            }
+            self.g.map(|row| row.map(|x| x / self.samples))
+        } else {
+            [[T::zero(); N]; N]
         }
-        out
     }
 
     /// Eigen-decomposition of the normalized information matrix. `O(N³)`.
+    #[must_use]
     pub fn eigen(&self) -> SymmetricEigen<T, N> {
         symmetric_eigen(&self.normalized())
     }
