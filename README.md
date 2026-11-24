@@ -1,5 +1,13 @@
 # miniident
 
+[![crates.io](https://img.shields.io/crates/v/miniident.svg)](https://crates.io/crates/miniident)
+[![docs.rs](https://img.shields.io/docsrs/miniident)](https://docs.rs/miniident)
+[![CI](https://github.com/sunsided/miniident/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/miniident/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sunsided/miniident/graph/badge.svg)](https://codecov.io/gh/sunsided/miniident)
+[![MSRV](https://img.shields.io/crates/msrv/miniident)](https://crates.io/crates/miniident)
+[![License](https://img.shields.io/crates/l/miniident)](https://github.com/sunsided/miniident#license)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+
 Online identifiability and excitation diagnostics on top of
 [minikalman](https://github.com/sunsided/minikalman-rs).
 
@@ -46,7 +54,8 @@ rls.set_forgetting_factor(0.98);
 // a to ±0.02, b to ±0.05, |ρ| at most 0.95
 let identifiability = Identifiability::new([0.02, 0.05], 0.95);
 
-loop {
+// regressor φ and measurement y, one pair per sample
+for (phi, y) in [([0.0_f32, 1.0], 0.5), ([0.5, -1.0], -0.05)] {
     rls.update(&phi, y);
 
     let report = identifiability.assess_rls(&rls);
@@ -65,7 +74,7 @@ loop {
 `cargo run --example rls-identifiability` identifies the first-order motor of
 minikalman's `rls-adaptive` example through PRBS, rest and PRBS again:
 
-```
+```text
  step  input  a_hat   b_hat   σa/tol  σb/tol  worst  identifiability  excitation
   300  prbs    0.902   0.491    0.06    0.11    0.1  Identified       Sufficient
   350  rest    0.901   0.490    0.10    0.19    0.2  Correlated       Sufficient
@@ -91,7 +100,8 @@ combination the steady state cannot see.
 
 ## Open questions
 
-- **Directional forgetting.** The RLS docs note it as missing. It would fix the
+- **Directional forgetting** ([minikalman-rs#209](https://github.com/sunsided/minikalman-rs/issues/209)).
+  The RLS docs note it as missing. It would fix the
   windup guard's "forgetting stops for all directions" stall that this crate can
   only *diagnose*. It changes the estimator, so it fits minikalman better than here.
 - **Cost of `assess`.** `O(N³)` Jacobi per call. For larger `N` on small MCUs, tracking
@@ -102,4 +112,15 @@ combination the steady state cannot see.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE-2.0](https://github.com/sunsided/miniident/blob/main/LICENSE-APACHE-2.0))
+- MIT license ([LICENSE-MIT](https://github.com/sunsided/miniident/blob/main/LICENSE-MIT))
+
+at your option. The examples in `examples/` are public domain
+([CC0-1.0](https://github.com/sunsided/miniident/blob/main/LICENSES/CC0-1.0.txt)), so you can
+copy them into anything.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
