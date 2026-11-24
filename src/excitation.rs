@@ -79,7 +79,9 @@ pub struct ExcitationReport<T, const N: usize> {
 /// Online persistent-excitation monitor for `N` parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExcitationMonitor<T, const N: usize> {
+    /// The windowed information of the regressors.
     info: InformationMatrix<T, N>,
+    /// The thresholds the verdict applies.
     thresholds: ExcitationThresholds<T>,
 }
 
@@ -130,21 +132,22 @@ impl<T: MatrixDataType, const N: usize> ExcitationMonitor<T, N> {
 
     /// Computes the verdict. `O(N³)`; call it at a lower rate than [`Self::update`] where
     /// that matters.
+    #[must_use]
     pub fn assess(&self) -> ExcitationReport<T, N> {
         let samples = self.info.effective_samples();
         let e = self.info.eigen();
         let th = &self.thresholds;
 
-        let (min, max, weakest) = if N == 0 {
-            (T::zero(), T::zero(), [T::zero(); N])
-        } else {
-            (e.values[0], e.values[N - 1], e.vectors[0])
+        // The eigenvalues ascend, so the first pair is the weakest direction. N = 0 has none.
+        let (min, max, weakest) = match (e.values.first(), e.values.last(), e.vectors.first()) {
+            (Some(&min), Some(&max), Some(&weakest)) => (min, max, weakest),
+            _ => (T::zero(), T::zero(), [T::zero(); N]),
         };
-        let condition = (min > T::zero()).then(|| max / min);
+        let condition = condition_number(min, max);
         let deficient_directions = e
             .values
             .iter()
-            .filter(|&&v| !(v >= th.min_eigenvalue))
+            .filter(|&&v| !is_at_least(v, th.min_eigenvalue))
             .count();
 
         let status = if samples < th.min_samples {
@@ -187,6 +190,23 @@ impl<T: MatrixDataType, const N: usize> ExcitationMonitor<T, N> {
     pub fn reset(&mut self) {
         self.info.reset();
     }
+}
+
+/// `max / min`, or `None` if `min` is not positive or is NaN.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "MatrixDataType has no checked operators; T defines overflow (see linalg docs)"
+)]
+fn condition_number<T: MatrixDataType>(min: T, max: T) -> Option<T> {
+    (min > T::zero()).then(|| max / min)
+}
+
+/// `value ≥ threshold`, and `false` for NaN, so a NaN eigenvalue counts as deficient.
+fn is_at_least<T: MatrixDataType>(value: T, threshold: T) -> bool {
+    matches!(
+        value.partial_cmp(&threshold),
+        Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
+    )
 }
 
 #[cfg(test)]
