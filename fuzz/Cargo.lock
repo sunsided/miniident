@@ -113,9 +113,9 @@ dependencies = [
 
 [[package]]
 name = "minikalman"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aec8ff3648241d8f00d523331ab05e07f3ac9ccbfc47e620e43550f9924777c2"
+checksum = "8d476e80acda50a0513cb921c2df5ba62540284cd408cb2cd4fc3425c431e4ab"
 dependencies = [
  "libm",
  "num-traits",

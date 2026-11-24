@@ -16,7 +16,7 @@
 
 use crate::information::InformationMatrix;
 use minikalman::matrix::{MatrixDataType, MatrixMut};
-use minikalman::rls::RecursiveLeastSquares;
+use minikalman::rls::{Forgetting, RecursiveLeastSquares};
 
 /// Thresholds for the excitation verdict, applied to the normalized information matrix (see
 /// [`InformationMatrix::normalized`]).
@@ -100,10 +100,13 @@ impl<T: MatrixDataType, const N: usize> ExcitationMonitor<T, N> {
     /// Creates a monitor that judges the same window as `rls`: its forgetting factor `μ`.
     ///
     /// The window matches as long as the estimator's windup guard is inactive; while it
-    /// limits forgetting, the estimator remembers longer than the monitor does. That is the
-    /// conservative direction for a warning.
-    pub fn for_rls<Theta, P, TempF, TempK>(
-        rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK>,
+    /// limits forgetting, the estimator remembers longer than the monitor does. With
+    /// [`Directional`](minikalman::rls::Directional) forgetting the estimator forgets only
+    /// along `φ`, while the monitor forgets in every direction: it reports a direction as
+    /// starved once the *recent* input stops exciting it, even though the estimator still
+    /// holds what it learned there. Both cases are the conservative direction for a warning.
+    pub fn for_rls<Theta, P, TempF, TempK, F>(
+        rls: &RecursiveLeastSquares<N, T, Theta, P, TempF, TempK, F>,
         thresholds: ExcitationThresholds<T>,
     ) -> Self
     where
@@ -111,6 +114,7 @@ impl<T: MatrixDataType, const N: usize> ExcitationMonitor<T, N> {
         P: MatrixMut<N, N, T>,
         TempF: MatrixMut<N, 1, T>,
         TempK: MatrixMut<N, 1, T>,
+        F: Forgetting,
     {
         Self::new(rls.forgetting_factor(), thresholds)
     }

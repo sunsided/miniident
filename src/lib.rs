@@ -32,7 +32,8 @@
 //! ## Why the estimator's covariance
 //!
 //! For RLS, `Pₖ₊₁⁻¹ = μₖ·Pₖ⁻¹ + φₖ·φₖᵀ/r`: the inverse covariance *is* the information
-//! matrix, including the windup guard's variable forgetting `μₖ`, the measurement variance
+//! matrix, including the windup guard's variable forgetting `μₖ` (or forgetting along `φₖ`
+//! only, with [`Directional`](minikalman::rls::Directional) forgetting), the measurement variance
 //! `r`, the prior `P₀` and every gated sample that was left out. A separately tracked
 //! information matrix would drift from what the estimator actually knows, so the verdict
 //! comes from `P` itself. For an augmented-state filter, the parameter block of `P` plays the
