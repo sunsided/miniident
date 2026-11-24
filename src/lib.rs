@@ -15,6 +15,15 @@
 //! - **What fixes it?** [`prbs`] generates maximal-length binary excitation, held for as many
 //!   samples as the plant's bandwidth needs.
 //!
+//! ```mermaid
+//! flowchart LR
+//!   prbs["prbs: excitation input"] --> plant[plant]
+//!   plant -- "φ, y" --> rls["minikalman estimator"]
+//!   plant -- "φ" --> excitation["excitation: is the input informative?"]
+//!   rls -- "covariance P" --> identifiability["identifiability: is θ trusted?"]
+//!   identifiability -- "worst direction" --> prbs
+//! ```
+//!
 //! ## Why the estimator's covariance
 //!
 //! For RLS, `Pₖ₊₁⁻¹ = μₖ·Pₖ⁻¹ + φₖ·φₖᵀ/r`: the inverse covariance *is* the information
@@ -48,6 +57,11 @@ pub mod linalg;
 pub mod prbs;
 
 pub use minikalman;
+
+/// Doctests for the code examples in README.md (not part of the API).
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+mod readme_doctests {}
 
 /// The commonly used types.
 pub mod prelude {

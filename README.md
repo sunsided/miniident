@@ -46,7 +46,8 @@ rls.set_forgetting_factor(0.98);
 // a to ±0.02, b to ±0.05, |ρ| at most 0.95
 let identifiability = Identifiability::new([0.02, 0.05], 0.95);
 
-loop {
+// regressor φ and measurement y, one pair per sample
+for (phi, y) in [([0.0_f32, 1.0], 0.5), ([0.5, -1.0], -0.05)] {
     rls.update(&phi, y);
 
     let report = identifiability.assess_rls(&rls);
@@ -65,7 +66,7 @@ loop {
 `cargo run --example rls-identifiability` identifies the first-order motor of
 minikalman's `rls-adaptive` example through PRBS, rest and PRBS again:
 
-```
+```text
  step  input  a_hat   b_hat   σa/tol  σb/tol  worst  identifiability  excitation
   300  prbs    0.902   0.491    0.06    0.11    0.1  Identified       Sufficient
   350  rest    0.901   0.490    0.10    0.19    0.2  Correlated       Sufficient

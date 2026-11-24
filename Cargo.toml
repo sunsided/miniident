@@ -10,6 +10,10 @@ keywords = ["system-identification", "identifiability", "kalman-filter", "embedd
 categories = ["algorithms", "science::robotics", "embedded", "no-std::no-alloc"]
 readme = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--html-in-header", "docs/mermaid.html"]
+
 [features]
 default = ["libm"]
 std = ["minikalman/std"]
