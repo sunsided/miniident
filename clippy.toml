@@ -1,0 +1,15 @@
+# Stricter than clippy defaults (100 / 25) to push toward helper extraction.
+# Lower further for simulation or game loops; never raise to silence a finding.
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 15
+
+# Tests may unwrap/expect freely if the restriction lints are ever enabled.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# High-assurance and Safety-critical profiles (docs/assurance.md): tests may panic and index.
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+# Numeric newtypes whose operators are checked internally, e.g. ["crate::fixed::Q16"].
+# arithmetic-side-effects-allowed = []
+# Safety-critical: the target's stack budget in bytes (default 512000).
+# stack-size-threshold = 16384
